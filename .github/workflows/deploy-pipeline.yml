@@ -7,10 +7,10 @@ on:
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: destroy
+  TERRAFORM_ACTION: apply
   IMAGE_NAME: flaskapp
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
 
 jobs:
   # -------------------------
@@ -32,7 +32,7 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
-      - name: Terraform apply/destroy
+      - name: Terraform apply
         working-directory: ./terraform
         run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
 
@@ -40,10 +40,13 @@ jobs:
         if: env.TERRAFORM_ACTION == 'apply'
         working-directory: ./terraform
         run: |
-           EC2_IP=$(terraform output -raw ec2_public_ip | tr -d '\r' | tr -d '[:space:]')
-            echo "EC2_IP=$EC2_IP" >> $GITHUB_ENV
+          EC2_IP=$(terraform output -raw ec2_public_ip | tr -d '\r\n')
+          echo "EC2_IP=$EC2_IP" >> $GITHUB_ENV
+           echo "::set-output name=public_ip::$EC2_IP"
 
-           
+    outputs:
+        ec2_public_ip: ${{ steps.ec2_ip.outputs.public_ip }}
+
   # -------------------------
   # Stage 2: Create ECR repo if needed
   # -------------------------
@@ -55,14 +58,17 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1-node16
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Check if ECR repository exists
-        id: check_repo
         run: |
-          repo_name=$(aws ecr describe-repositories --repository-names ${{ env.IMAGE_NAME }} 2>/dev/null || echo "")
+          repo_name=$(aws ecr describe-repositories \
+            --repository-names ${{ env.IMAGE_NAME }} \
+            --query "repositories[0].repositoryName" \
+            --output text 2>/dev/null || echo "")
+          repo_name=$(echo "$repo_name" | tr -d '\r\n')
           echo "repo_name=$repo_name" >> $GITHUB_ENV
 
       - name: Create ECR repository if not exists
@@ -72,8 +78,13 @@ jobs:
 
       - name: Get ECR URI
         run: |
-           ECR_URI=$(aws ecr describe-repositories --repository-names ${{ env.IMAGE_NAME }} --query "repositories[0].repositoryUri" --output text)
-            echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
+          ECR_URI=$(aws ecr describe-repositories \
+            --repository-names ${{ env.IMAGE_NAME }} \
+            --query "repositories[0].repositoryUri" \
+            --output text)
+          ECR_URI=$(echo "$ECR_URI" | tr -d '\r\n')
+          echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
+
   # -------------------------
   # Stage 3: Build Docker and push
   # -------------------------
@@ -94,7 +105,9 @@ jobs:
 
       - name: Login to Amazon ECR
         run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+           aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+
+            # Pull latest image
 
       - name: Build, tag, and push Docker image
         run: |
@@ -105,14 +118,14 @@ jobs:
   # Stage 4: Deploy Docker to EC2
   # -------------------------
   deploy_to_ec2:
-    name: Deploy Docker on EC2
+    name: Deploy Docker Image to EC2
     runs-on: ubuntu-latest
-    needs: build_and_push_docker
+    needs: [deploy_aws_infrastructure, build_and_push_docker]
     steps:
-      - name: SSH and deploy
+      - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ needs.deploy_aws_infrastructure.outputs.EC2_IP }}
+          host: ${{ needs.deploy_aws_infrastructure.outputs.ec2_public_ip }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
@@ -125,14 +138,12 @@ jobs:
             fi
 
             # Login to ECR
-            aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ env.ECR_URI }}
 
-            # Pull latest image
-            sudo docker pull ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.IMAGE_NAME }}:latest
+            # Pull image from ECR
+            sudo docker pull ${{ env.ECR_URI }}:latest
 
-            # Stop old container if exists
+            # Stop old container and run new one
             sudo docker stop flaskapp || true
             sudo docker rm flaskapp || true
-
-            # Run new container
-            sudo docker run -d -p 5000:5000 --name flaskapp ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.IMAGE_NAME }}:latest
+            sudo docker run -d -p 5000:5000 --name flaskapp ${{ env.ECR_URI }}:latest
