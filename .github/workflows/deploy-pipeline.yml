@@ -54,7 +54,10 @@ jobs:
         id: ec2ip
         working-directory: ./terraform
         run: |
+          if terraform output | grep -q "ec2_public_ip"; then
           echo "ec2_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
+          
+          fi
 
       - name: Get ECR Repository URI
         id: ecruri
