@@ -7,10 +7,10 @@ on:
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply
-  IMAGE_NAME: flaskapp
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  AWS_REGION: us-east-1
+  TERRAFORM_ACTION: destroy
+  IMAGE_NAME: flaskapp
 
 jobs:
   # -------------------------
@@ -19,6 +19,8 @@ jobs:
   deploy_aws_infrastructure:
     name: Build AWS EC2 infrastructure
     runs-on: ubuntu-latest
+    outputs:
+      ec2_public_ip: ${{ steps.set_ec2_ip.outputs.ec2_public_ip }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -36,16 +38,13 @@ jobs:
         working-directory: ./terraform
         run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
 
-      - name: Get EC2 public IP
-        if: env.TERRAFORM_ACTION == 'apply'
+      - name: Set EC2 public IP output
+        id: set_ec2_ip
         working-directory: ./terraform
         run: |
           EC2_IP=$(terraform output -raw ec2_public_ip | tr -d '\r\n')
           echo "EC2_IP=$EC2_IP" >> $GITHUB_ENV
-           echo "::set-output name=public_ip::$EC2_IP"
-
-    outputs:
-        ec2_public_ip: ${{ steps.ec2_ip.outputs.public_ip }}
+          echo "::set-output name=ec2_public_ip::$EC2_IP"
 
   # -------------------------
   # Stage 2: Create ECR repo if needed
@@ -73,16 +72,14 @@ jobs:
 
       - name: Create ECR repository if not exists
         if: env.repo_name == ''
-        run: |
-          aws ecr create-repository --repository-name ${{ env.IMAGE_NAME }}
+        run: aws ecr create-repository --repository-name ${{ env.IMAGE_NAME }}
 
       - name: Get ECR URI
         run: |
           ECR_URI=$(aws ecr describe-repositories \
             --repository-names ${{ env.IMAGE_NAME }} \
             --query "repositories[0].repositoryUri" \
-            --output text)
-          ECR_URI=$(echo "$ECR_URI" | tr -d '\r\n')
+            --output text | tr -d '\r\n ')
           echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
 
   # -------------------------
@@ -105,14 +102,16 @@ jobs:
 
       - name: Login to Amazon ECR
         run: |
-           aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-
-            # Pull latest image
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+          docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
 
       - name: Build, tag, and push Docker image
         run: |
-          docker build -t ${{ env.ECR_URI }}:latest .
-          docker push ${{ env.ECR_URI }}:latest
+          echo "Using ECR URI: $ECR_URI"
+          docker build -t "$ECR_URI:latest" .
+          docker push "$ECR_URI:latest"
+        env:
+          ECR_URI: ${{ env.ECR_URI }}
 
   # -------------------------
   # Stage 4: Deploy Docker to EC2
@@ -138,7 +137,8 @@ jobs:
             fi
 
             # Login to ECR
-            aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ env.ECR_URI }}
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+            sudo docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
 
             # Pull image from ECR
             sudo docker pull ${{ env.ECR_URI }}:latest
