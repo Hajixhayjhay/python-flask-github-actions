@@ -11,6 +11,8 @@ env:
   AWS_REGION: us-east-1
   TERRAFORM_ACTION: apply
   IMAGE_NAME: flaskapp
+  IMAGE_TAG: latest
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
 
 jobs:
   # -------------------------
@@ -22,8 +24,7 @@ jobs:
     outputs:
       ec2_public_ip: ${{ steps.set_ec2_ip.outputs.ec2_public_ip }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
@@ -54,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy_aws_infrastructure
     outputs:
-      ecr_uri: ${{ steps.get_ecr_uri.outputs.ECR_URI }}
+      ecr_uri: ${{ steps.get_ecr_uri.outputs.ecr_uri }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1-node16
@@ -83,27 +84,26 @@ jobs:
             --repository-names ${{ env.IMAGE_NAME }} \
             --query "repositories[0].repositoryUri" \
             --output text | tr -d '\r\n ')
+          echo "::set-output name=ecr_uri::$ECR_URI"
           echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
-          echo "::set-output name=ECR_URI::$ECR_URI"
 
   # -------------------------
-  # Stage 3: Build and Push Docker Image
+  # Stage 3: Build and push Docker image
   # -------------------------
   build_and_push_docker:
-    name: Build and Push Docker Image
+    name: Build and Push Docker image
     runs-on: ubuntu-latest
     needs: create_ecr_repository
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build, tag, and push Docker image
+      - name: Build Docker image
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          IMAGE_TAG: latest
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
           ECR_URI: ${{ needs.create_ecr_repository.outputs.ecr_uri }}
         run: |
           echo "Using ECR URI: $ECR_URI"
@@ -126,7 +126,6 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Install Docker if not installed
             if ! command -v docker &> /dev/null; then
               sudo apt-get update -y
               sudo apt-get install -y docker.io
@@ -134,14 +133,11 @@ jobs:
               sudo systemctl enable docker
             fi
 
-            # Login to ECR
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             sudo docker login --username AWS --password-stdin ${{ needs.create_ecr_repository.outputs.ecr_uri }}
 
-            # Pull image from ECR
-            sudo docker pull ${{ needs.create_ecr_repository.outputs.ecr_uri }}:latest
+            sudo docker pull ${{ needs.create_ecr_repository.outputs.ecr_uri }}:${{ env.IMAGE_TAG }}
 
-            # Stop old container and run new one
             sudo docker stop flaskapp || true
             sudo docker rm flaskapp || true
-            sudo docker run -d -p 5000:5000 --name flaskapp ${{ needs.create_ecr_repository.outputs.ecr_uri }}:latest
+            sudo docker run -d -p 5000:5000 --name flaskapp ${{ needs.create_ecr_repository.outputs.ecr_uri }}:${{ env.IMAGE_TAG }}
