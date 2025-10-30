@@ -9,7 +9,7 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply
+  TERRAFORM_ACTION: destroy
   IMAGE_NAME: flaskapp
 
 jobs:
@@ -53,6 +53,8 @@ jobs:
     name: Create ECR repository
     runs-on: ubuntu-latest
     needs: deploy_aws_infrastructure
+    outputs:
+      ecr_uri: ${{ steps.get_ecr_uri.outputs.ECR_URI }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1-node16
@@ -62,12 +64,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Check if ECR repository exists
+        id: check_ecr
         run: |
           repo_name=$(aws ecr describe-repositories \
             --repository-names ${{ env.IMAGE_NAME }} \
             --query "repositories[0].repositoryName" \
             --output text 2>/dev/null || echo "")
-          repo_name=$(echo "$repo_name" | tr -d '\r\n')
           echo "repo_name=$repo_name" >> $GITHUB_ENV
 
       - name: Create ECR repository if not exists
@@ -75,15 +77,17 @@ jobs:
         run: aws ecr create-repository --repository-name ${{ env.IMAGE_NAME }}
 
       - name: Get ECR URI
+        id: get_ecr_uri
         run: |
           ECR_URI=$(aws ecr describe-repositories \
             --repository-names ${{ env.IMAGE_NAME }} \
             --query "repositories[0].repositoryUri" \
             --output text | tr -d '\r\n ')
           echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
+          echo "::set-output name=ECR_URI::$ECR_URI"
 
   # -------------------------
-  # Stage 3: Build and Push Docker Image (Improved)
+  # Stage 3: Build and Push Docker Image
   # -------------------------
   build_and_push_docker:
     name: Build and Push Docker Image
@@ -96,11 +100,11 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build Docker image
+      - name: Build, tag, and push Docker image
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_TAG: latest
-          ECR_URI: ${{ env.ECR_URI }}
+          ECR_URI: ${{ needs.create_ecr_repository.outputs.ecr_uri }}
         run: |
           echo "Using ECR URI: $ECR_URI"
           docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
@@ -132,12 +136,12 @@ jobs:
 
             # Login to ECR
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-            sudo docker login --username AWS --password-stdin ${{ env.ECR_URI }}
+            sudo docker login --username AWS --password-stdin ${{ needs.create_ecr_repository.outputs.ecr_uri }}
 
             # Pull image from ECR
-            sudo docker pull ${{ env.ECR_URI }}:latest
+            sudo docker pull ${{ needs.create_ecr_repository.outputs.ecr_uri }}:latest
 
             # Stop old container and run new one
             sudo docker stop flaskapp || true
             sudo docker rm flaskapp || true
-            sudo docker run -d -p 5000:5000 --name flaskapp ${{ env.ECR_URI }}:latest
+            sudo docker run -d -p 5000:5000 --name flaskapp ${{ needs.create_ecr_repository.outputs.ecr_uri }}:latest
