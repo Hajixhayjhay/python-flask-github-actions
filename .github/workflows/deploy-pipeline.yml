@@ -8,7 +8,7 @@ env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply  # Change to 'apply' to deploy infrastructure
+  TERRAFORM_ACTION: destroy
   IMAGE_NAME: flaskapp
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
-      - name: Terraform apply/destroy
+      - name: Terraform apply
         working-directory: ./terraform
         run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
 
@@ -41,7 +41,9 @@ jobs:
         run: |
           EC2_IP=$(terraform output -raw ec2_public_ip | tr -d '\r\n')
           echo "EC2_IP=$EC2_IP" >> $GITHUB_ENV
-         
+
+    outputs:
+      ec2_public_ip: ${{ env.EC2_IP }}
 
   # -------------------------
   # Stage 2: Create ECR repo if needed
@@ -59,9 +61,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Check if ECR repository exists
-        id: check_repo
         run: |
-          repo_name=$(aws ecr describe-repositories --repository-names ${{ env.IMAGE_NAME }} 2>/dev/null || echo "")
+          repo_name=$(aws ecr describe-repositories \
+            --repository-names ${{ env.IMAGE_NAME }} \
+            --query "repositories[0].repositoryName" \
+            --output text 2>/dev/null || echo "")
+          repo_name=$(echo "$repo_name" | tr -d '\r\n')
           echo "repo_name=$repo_name" >> $GITHUB_ENV
 
       - name: Create ECR repository if not exists
@@ -71,7 +76,11 @@ jobs:
 
       - name: Get ECR URI
         run: |
-          ECR_URI=$(aws ecr describe-repositories --repository-names ${{ env.IMAGE_NAME }} --query "repositories[0].repositoryUri" --output text)
+          ECR_URI=$(aws ecr describe-repositories \
+            --repository-names ${{ env.IMAGE_NAME }} \
+            --query "repositories[0].repositoryUri" \
+            --output text)
+          ECR_URI=$(echo "$ECR_URI" | tr -d '\r\n')
           echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
 
   # -------------------------
@@ -102,17 +111,17 @@ jobs:
           docker push ${{ env.ECR_URI }}:latest
 
   # -------------------------
-  # Stage 4: Deploy to EC2
+  # Stage 4: Deploy Docker to EC2
   # -------------------------
   deploy_to_ec2:
-    name: Deploy Docker container to EC2
+    name: Deploy Docker Image to EC2
     runs-on: ubuntu-latest
-    needs: build_and_push_docker
+    needs: [deploy_aws_infrastructure, build_and_push_docker]
     steps:
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ env.EC2_IP }}
+          host: ${{ needs.deploy_aws_infrastructure.outputs.ec2_public_ip }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
@@ -124,11 +133,13 @@ jobs:
               sudo systemctl enable docker
             fi
 
-            # Login to ECR and pull image
+            # Login to ECR
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ env.ECR_URI }}
+
+            # Pull image from ECR
             sudo docker pull ${{ env.ECR_URI }}:latest
 
-            # Stop old container, run new one
+            # Stop old container and run new one
             sudo docker stop flaskapp || true
             sudo docker rm flaskapp || true
             sudo docker run -d -p 5000:5000 --name flaskapp ${{ env.ECR_URI }}:latest
