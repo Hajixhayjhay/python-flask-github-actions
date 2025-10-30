@@ -9,7 +9,7 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply
+  TERRAFORM_ACTION: destroy
   IMAGE_NAME: flaskapp
 
 jobs:
@@ -40,8 +40,10 @@ jobs:
         if: env.TERRAFORM_ACTION == 'apply'
         working-directory: ./terraform
         run: |
-           EC2_IP=$(terraform output -raw ec2_public_ip | tr -d '\r')
-            echo "EC2_IP=${EC2_IP}" >> $GITHUB_ENV
+           EC2_IP=$(terraform output -raw ec2_public_ip | tr -d '\r' | tr -d '[:space:]')
+            echo "EC2_IP=$EC2_IP" >> $GITHUB_ENV
+
+           
   # -------------------------
   # Stage 2: Create ECR repo if needed
   # -------------------------
