@@ -9,7 +9,7 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: destroy
+  TERRAFORM_ACTION: apply
   IMAGE_NAME: flaskapp
 
 jobs:
@@ -70,9 +70,8 @@ jobs:
 
       - name: Get ECR URI
         run: |
-          ECR_URI=$(aws ecr describe-repositories --repository-names ${{ env.IMAGE_NAME }} --query "repositories[0].repositoryUri" --output text)
-          echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
-
+           ECR_URI=$(aws ecr describe-repositories --repository-names ${{ env.IMAGE_NAME }} --query "repositories[0].repositoryUri" --output text)
+            echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
   # -------------------------
   # Stage 3: Build Docker and push
   # -------------------------
