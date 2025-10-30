@@ -80,6 +80,13 @@ resource "aws_security_group" "ec2_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    description = "Allow Flask App"
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]  # open to all, or restrict to your IP
+  } 
 
   egress {
     from_port   = 0
@@ -138,4 +145,13 @@ resource "aws_instance" "web_server" {
     Name = "flaskapp-web-server"
   }
 
+}
+
+resource "aws_ecr_repository" "flask_app" {
+  name                 = "flaskapp"
+  image_tag_mutability = "MUTABLE"
+
+  tags = {
+    Name = "FlaskAppECR"
+  }
 }

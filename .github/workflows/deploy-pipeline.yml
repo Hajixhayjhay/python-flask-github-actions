@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ec2_ip: ${{ steps.ec2ip.outputs.ec2_ip }}
+      ecr_repo_uri: ${{ steps.ecruri.outputs.ecr_repo_uri }}
 
     steps:
       - name: Checkout repo
@@ -40,7 +41,7 @@ jobs:
         run: |
           terraform init
           terraform apply -auto-approve
-        env: 
+        env:
           TF_VAR_region: ${{ secrets.TF_VAR_region }}
           TF_VAR_vpc_cidr: ${{ secrets.TF_VAR_vpc_cidr }}
           TF_VAR_public_subnet_cidr: ${{ secrets.TF_VAR_public_subnet_cidr }}
@@ -55,8 +56,14 @@ jobs:
         run: |
           echo "ec2_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
 
+      - name: Get ECR Repository URI
+        id: ecruri
+        working-directory: ./terraform
+        run: |
+          echo "ecr_repo_uri=$(terraform output -raw ecr_repository_uri)" >> $GITHUB_OUTPUT
+
   # -------------------------
-  # Stage 2: Build & Push to ECR
+  # Stage 2: Build & Push Docker Image to ECR
   # -------------------------
   build-and-push:
     name: Build and Push Docker Image to ECR
@@ -77,48 +84,47 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to ECR
+      - name: Build, tag, and push Docker image
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          ECR_REPO_URI: ${{ needs.terraform-deploy.outputs.ecr_repo_uri }}
           IMAGE_TAG: latest
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker build -t $ECR_REPO_URI:$IMAGE_TAG .
+          docker push $ECR_REPO_URI:$IMAGE_TAG
 
   # -------------------------
-  # Stage 3: Deploy to EC2 (Ubuntu)
+  # Stage 3: Deploy Flask App to EC2
   # -------------------------
   deploy-ec2:
     name: Deploy Flask App to Ubuntu EC2
     runs-on: ubuntu-latest
     needs: [terraform-deploy, build-and-push]
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: SSH into Ubuntu EC2 and deploy Docker container
+      - name: SSH into EC2 and deploy Docker container
         uses: appleboy/ssh-action@v1.2.0
         with:
-         host: ${{ needs.terraform-deploy.outputs.ec2_ip }}
-         username: ubuntu
-         key: ${{ secrets.EC2_SSH_KEY }}
-         script: |
-          if ! command -v docker &> /dev/null; then
-            sudo apt-get update -y
-            sudo apt-get install -y docker.io awscli
-            sudo systemctl start docker
-            sudo systemctl enable docker
-            
-          fi
+          host: ${{ needs.terraform-deploy.outputs.ec2_ip }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Install Docker if not already installed
+            if ! command -v docker &> /dev/null; then
+              sudo apt-get update -y
+              sudo apt-get install -y docker.io awscli
+              sudo systemctl start docker
+              sudo systemctl enable docker
+            fi
 
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
-          sudo docker pull ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
-          sudo docker stop flaskapp || true
-          sudo docker rm flaskapp || true
-          sudo docker run -d -p 5000:5000 --name flaskapp ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
+            # Login to ECR, pull image, stop old container, and run new one
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ needs.terraform-deploy.outputs.ecr_repo_uri }}
+            sudo docker pull ${{ needs.terraform-deploy.outputs.ecr_repo_uri }}:latest
+            sudo docker stop flaskapp || true
+            sudo docker rm flaskapp || true
+            sudo docker run -d -p 5000:5000 --name flaskapp ${{ needs.terraform-deploy.outputs.ecr_repo_uri }}:latest
 
-          # Print the deployed app URL
-          EC2_IP=${{ needs.terraform-deploy.outputs.ec2_ip }}
-          echo "Flask app deployed at http://$EC2_IP:5000"
+            # Print deployed app URL
+            EC2_IP=${{ needs.terraform-deploy.outputs.ec2_ip }}
+            echo "Flask app deployed at http://$EC2_IP:5000"
