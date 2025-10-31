@@ -8,7 +8,7 @@ env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply  # change to 'destroy' if needed
+  TERRAFORM_ACTION: destroy  # change to 'destroy' if needed
   ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
 
 jobs:
@@ -35,9 +35,10 @@ jobs:
         id: tf_outputs
         working-directory: ./terraform
         run: |
-          echo "EC2_PUBLIC_IP=$(terraform output -raw ec2_public_ip)" >> $GITHUB_ENV
-          echo "IMAGE_NAME=$(terraform output -raw image_name)" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$(terraform output -raw image_tag)" >> $GITHUB_ENV
+          echo "EC2_PUBLIC_IP=\"$(terraform output -raw ec2_public_ip | tr -d '\r')\"" >> $GITHUB_ENV
+          echo "IMAGE_NAME=\"$(terraform output -raw image_name | tr -d '\r')\"" >> $GITHUB_ENV
+          echo "IMAGE_TAG=\"$(terraform output -raw image_tag | tr -d '\r')\"" >> $GITHUB_ENV
+
 
       # 5. Create ECR repo if needed
       - name: Ensure ECR repo exists
