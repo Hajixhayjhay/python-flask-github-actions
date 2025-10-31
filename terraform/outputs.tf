@@ -9,3 +9,10 @@ output "vpc_id" {
 }
 
 
+output "image_name" {
+  value = var.image_name
+}
+
+output "image_tag" {
+  value = var.image_tag
+}

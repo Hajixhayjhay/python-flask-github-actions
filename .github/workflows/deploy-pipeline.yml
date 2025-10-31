@@ -8,68 +8,60 @@ env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_REGION: us-east-1
+  TERRAFORM_ACTION: apply  # change to 'destroy' if needed
   ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
-  ECR_REPOSITORY: flaskapp  # simple fixed name
-  TERRAFORM_ACTION: apply
 
 jobs:
-  deploy_aws_infrastructure:
-    name: Build AWS EC2 infrastructure
+  deploy:
     runs-on: ubuntu-latest
-    outputs:
-      ec2_public_ip: ${{ steps.set_ec2_ip.outputs.ec2_public_ip }}
     steps:
+      # 1. Checkout repo
       - uses: actions/checkout@v3
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v2
+      # 2. Setup Terraform
+      - uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: 1.1.7
 
-      - name: Terraform init
-        working-directory: ./terraform
-        run: terraform init
-
+      # 3. Terraform init and apply
       - name: Terraform apply
         working-directory: ./terraform
-        run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
+        run: |
+          terraform init
+          terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
 
-      - name: Set EC2 public IP output
-        id: set_ec2_ip
+      # 4. Set outputs from Terraform
+      - name: Set outputs
+        id: tf_outputs
         working-directory: ./terraform
         run: |
-          EC2_PUBLIC_IP=$(terraform output -raw ec2_public_ip)
-          echo "::set-output name=ec2_public_ip::$EC2_PUBLIC_IP"
+          echo "EC2_PUBLIC_IP=$(terraform output -raw ec2_public_ip)" >> $GITHUB_ENV
+          echo "IMAGE_NAME=$(terraform output -raw image_name)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$(terraform output -raw image_tag)" >> $GITHUB_ENV
 
-  build_and_push_docker:
-    name: Build and Push Docker image
-    runs-on: ubuntu-latest
-    needs: deploy_aws_infrastructure
-    steps:
-      - uses: actions/checkout@v3
+      # 5. Create ECR repo if needed
+      - name: Ensure ECR repo exists
+        run: |
+          aws ecr describe-repositories --repository-names "$IMAGE_NAME" >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "$IMAGE_NAME"
 
-      - name: Login to Amazon ECR
+      # 6. Login to ECR
+      - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
+      # 7. Build and push Docker image
+      - name: Build & push Docker image
         run: |
-          IMAGE_TAG=${GITHUB_SHA::8}  # short commit SHA as tag
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          docker build -t $ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG
 
-  deploy_to_ec2:
-    name: Deploy Docker Image to EC2
-    runs-on: ubuntu-latest
-    needs: [deploy_aws_infrastructure, build_and_push_docker]
-    steps:
-      - name: Deploy to EC2 via SSH
+      # 8. Deploy Docker to EC2
+      - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ needs.deploy_aws_infrastructure.outputs.ec2_public_ip }}
+          host: ${{ env.EC2_PUBLIC_IP }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: IMAGE_TAG,ECR_REGISTRY,ECR_REPOSITORY
           script: |
             # Install Docker if not present
             if ! command -v docker &> /dev/null; then
@@ -79,12 +71,12 @@ jobs:
               sudo systemctl enable docker
             fi
 
-            # Stop and remove old container
-            sudo docker stop flaskapp || true
-            sudo docker rm flaskapp || true
+            # Login to ECR
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+              sudo docker login --username AWS --password-stdin $ECR_REGISTRY
 
-            # Pull and run new image
-            sudo docker pull $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-            sudo docker run -d -p 5000:5000 --name flaskapp $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-            echo "✅ Deployment complete!"
+            # Pull and run container
+            sudo docker stop $IMAGE_NAME || true
+            sudo docker rm $IMAGE_NAME || true
+            sudo docker pull $ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG
+            sudo docker run -d -p 5000:5000 --name $IMAGE_NAME $ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG

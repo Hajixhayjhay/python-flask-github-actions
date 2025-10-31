@@ -28,3 +28,10 @@ variable "key_name" {
   type        = string
 }
 
+variable "image_name" {
+  default = "flaskapp"
+}
+
+variable "image_tag" {
+  default = "latest"
+}
