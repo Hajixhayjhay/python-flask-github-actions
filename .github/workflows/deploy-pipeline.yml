@@ -9,7 +9,7 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: destroy # change to 'destroy' when tearing down infra
+  TERRAFORM_ACTION: apply # change to 'destroy' when tearing down infra
 
 jobs:
   # -------------------------
@@ -22,6 +22,7 @@ jobs:
       ec2_public_ip: ${{ steps.set_ec2_ip.outputs.ec2_public_ip }}
       image_name: ${{ steps.set_image_name.outputs.image_name }}
       image_tag: ${{ steps.set_image_tag.outputs.image_tag }}
+      terraform_action: ${{ env.TERRAFORM_ACTION }}
     steps:
       - uses: actions/checkout@v3
 
@@ -115,7 +116,7 @@ jobs:
         run: |
           docker tag ${{ needs.deploy_aws_infrastructure.outputs.image_name }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }} ${{ needs.create_ecr_repository.outputs.ecr_uri }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
 
-      - name: Push Docker Image to Amazon ECR
+      - name: Push Docker image to Amazon ECR
         run: |
           docker push ${{ needs.create_ecr_repository.outputs.ecr_uri }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
 
@@ -129,6 +130,7 @@ jobs:
       - deploy_aws_infrastructure
       - create_ecr_repository
       - build_and_push_docker
+    if: needs.deploy_aws_infrastructure.outputs.terraform_action != 'destroy'
     steps:
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -137,6 +139,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            # Install Docker if not present
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
               sudo apt-get update -y
@@ -149,9 +152,11 @@ jobs:
             IMAGE_NAME="${{ needs.deploy_aws_infrastructure.outputs.image_name }}"
             IMAGE_TAG="${{ needs.deploy_aws_infrastructure.outputs.image_tag }}"
 
+            # Login to ECR
             echo "Logging into ECR..."
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin $ECR_URI
 
+            # Pull and run the Docker image
             echo "Pulling Docker image..."
             sudo docker pull $ECR_URI:$IMAGE_TAG
 
