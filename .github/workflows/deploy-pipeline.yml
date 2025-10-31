@@ -61,7 +61,8 @@ jobs:
   deploy_docker:
     name: Create ECR, Build & Deploy Docker
     needs: deploy
-    if: ${{ env.TERRAFORM_ACTION != 'destroy' }}
+    if: ${{ needs.deploy.outputs.terraform_action != 'destroy'}}
+
     runs-on: ubuntu-latest
     steps:
       # Checkout repo
