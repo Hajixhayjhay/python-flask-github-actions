@@ -9,7 +9,7 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply  # change to 'destroy' when tearing down infra
+  TERRAFORM_ACTION: destroy  # change to 'destroy' when tearing down infra
 
 jobs:
   # -------------------------
