@@ -9,9 +9,7 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply   # change back to destroy when tearing down infra
-  IMAGE_NAME: flaskapp
-  IMAGE_TAG: latest
+  TERRAFORM_ACTION: destroy  # change to 'destroy' when tearing down infra
 
 jobs:
   # -------------------------
@@ -22,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ec2_public_ip: ${{ steps.set_ec2_ip.outputs.ec2_public_ip }}
+      image_name: ${{ steps.set_image_name.outputs.image_name }}
+      image_tag: ${{ steps.set_image_tag.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v3
 
@@ -46,6 +46,22 @@ jobs:
           echo "EC2_IP=$EC2_IP" >> $GITHUB_ENV
           echo "::set-output name=ec2_public_ip::$EC2_IP"
 
+      - name: Set image name output
+        id: set_image_name
+        working-directory: ./terraform
+        run: |
+          IMAGE_NAME=$(terraform output -raw image_name | tr -d '\r\n')
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+          echo "::set-output name=image_name::$IMAGE_NAME"
+
+      - name: Set image tag output
+        id: set_image_tag
+        working-directory: ./terraform
+        run: |
+          IMAGE_TAG=$(terraform output -raw image_tag | tr -d '\r\n')
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "::set-output name=image_tag::$IMAGE_TAG"
+
   # -------------------------
   # Stage 2: Create ECR repo if needed
   # -------------------------
@@ -65,8 +81,8 @@ jobs:
 
       - name: Ensure ECR repository exists
         run: |
-          aws ecr describe-repositories --repository-names ${{ env.IMAGE_NAME }} >/dev/null 2>&1 || \
-          aws ecr create-repository --repository-name ${{ env.IMAGE_NAME }}
+          aws ecr describe-repositories --repository-names ${{ needs.deploy_aws_infrastructure.outputs.image_name }} >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -75,7 +91,7 @@ jobs:
       - name: Set ECR URI
         id: set_ecr_uri
         run: |
-          ECR_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.IMAGE_NAME }}"
+          ECR_URI="${{ steps.login-ecr.outputs.registry }}/${{ needs.deploy_aws_infrastructure.outputs.image_name }}"
           echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
           echo "::set-output name=ecr_uri::$ECR_URI"
           echo "✅ Using ECR URI: $ECR_URI"
@@ -96,7 +112,7 @@ jobs:
       - name: Build and Push Docker image
         env:
           ECR_URI: ${{ needs.create_ecr_repository.outputs.ecr_uri }}
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
         run: |
           echo "🛠 Building image for $ECR_URI:$IMAGE_TAG"
           docker build -t $ECR_URI:$IMAGE_TAG .
@@ -126,11 +142,12 @@ jobs:
 
             echo "🚀 Deploying image..."
             ECR_URI="${{ needs.create_ecr_repository.outputs.ecr_uri }}"
+            IMAGE_TAG="${{ needs.deploy_aws_infrastructure.outputs.image_tag }}"
 
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             sudo docker login --username AWS --password-stdin $ECR_URI
 
-            sudo docker pull $ECR_URI:${{ env.IMAGE_TAG }}
+            sudo docker pull $ECR_URI:$IMAGE_TAG
             sudo docker stop flaskapp || true
             sudo docker rm flaskapp || true
-            sudo docker run -d -p 5000:5000 --name flaskapp $ECR_URI:${{ env.IMAGE_TAG }}
+            sudo docker run -d -p 5000:5000 --name flaskapp $ECR_URI:$IMAGE_TAG

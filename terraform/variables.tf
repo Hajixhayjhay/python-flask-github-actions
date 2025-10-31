@@ -27,3 +27,11 @@ variable "key_name" {
   description = "Name of the existing key pair"
   type        = string
 }
+
+variable "image_name" {
+  default = "flaskapp"
+}
+
+variable "image_tag" {
+  default = "latest"
+}
