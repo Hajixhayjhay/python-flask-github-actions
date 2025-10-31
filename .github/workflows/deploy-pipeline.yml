@@ -8,55 +8,85 @@ env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: destroy  # change to 'destroy' if needed
+  TERRAFORM_ACTION: apply   # change to 'destroy' if needed
   ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
 
 jobs:
+  # -----------------------------
+  # 1️⃣ Deploy AWS Infrastructure
+  # -----------------------------
   deploy:
     runs-on: ubuntu-latest
+    outputs:
+      image_name: ${{ steps.tf_outputs.outputs.IMAGE_NAME }}
+      image_tag: ${{ steps.tf_outputs.outputs.IMAGE_TAG }}
+      ec2_public_ip: ${{ steps.tf_outputs.outputs.EC2_PUBLIC_IP }}
     steps:
-      # 1. Checkout repo
+      # Checkout repo
       - uses: actions/checkout@v3
 
-      # 2. Setup Terraform
+      # Setup Terraform
       - uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: 1.1.7
 
-      # 3. Terraform init and apply
-      - name: Terraform apply
+      # Terraform init and apply/destroy
+      - name: Terraform action
         working-directory: ./terraform
         run: |
           terraform init
           terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
 
-      # 4. Set outputs from Terraform
-      - name: Set outputs
+      # Set Terraform outputs
+      - name: Set Terraform outputs
         id: tf_outputs
+        if: env.TERRAFORM_ACTION == 'apply'
         working-directory: ./terraform
         run: |
-          echo "EC2_PUBLIC_IP=\"$(terraform output -raw ec2_public_ip | tr -d '\r')\"" >> $GITHUB_ENV
-          echo "IMAGE_NAME=\"$(terraform output -raw image_name | tr -d '\r')\"" >> $GITHUB_ENV
-          echo "IMAGE_TAG=\"$(terraform output -raw image_tag | tr -d '\r')\"" >> $GITHUB_ENV
+          IMAGE_NAME=$(terraform output -raw image_name)
+          IMAGE_TAG=$(terraform output -raw image_tag)
+          EC2_PUBLIC_IP=$(terraform output -raw ec2_public_ip)
 
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "EC2_PUBLIC_IP=$EC2_PUBLIC_IP" >> $GITHUB_ENV
 
-      # 5. Create ECR repo if needed
-      - name: Ensure ECR repo exists
+          echo "::set-output name=IMAGE_NAME::$IMAGE_NAME"
+          echo "::set-output name=IMAGE_TAG::$IMAGE_TAG"
+          echo "::set-output name=EC2_PUBLIC_IP::$EC2_PUBLIC_IP"
+
+  # -----------------------------
+  # 2️⃣ ECR Repository + Docker
+  # -----------------------------
+  deploy_docker:
+    name: Create ECR, Build & Deploy Docker
+    needs: deploy
+    if: ${{ env.TERRAFORM_ACTION != 'destroy' }}
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout repo
+      - uses: actions/checkout@v3
+
+      # Set variables from deploy outputs
+      - name: Set environment variables
         run: |
-          aws ecr describe-repositories --repository-names "$IMAGE_NAME" >/dev/null 2>&1 || \
+          echo "IMAGE_NAME=${{ needs.deploy.outputs.image_name }}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ needs.deploy.outputs.image_tag }}" >> $GITHUB_ENV
+          echo "EC2_PUBLIC_IP=${{ needs.deploy.outputs.ec2_public_ip }}" >> $GITHUB_ENV
+
+      # Check if ECR repository exists, create if not
+      - name: Create ECR repository if not exists
+        run: |
+          aws ecr describe-repositories --repository-names "$IMAGE_NAME" || \
           aws ecr create-repository --repository-name "$IMAGE_NAME"
 
-      # 6. Login to ECR
-      - name: Login to ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # 7. Build and push Docker image
+      # Build & push Docker image
       - name: Build & push Docker image
         run: |
           docker build -t $ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG
 
-      # 8. Deploy Docker to EC2
+      # Deploy Docker container to EC2
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -64,7 +94,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Install Docker if not present
+            # Install Docker if not installed
             if ! command -v docker &> /dev/null; then
               sudo apt-get update -y
               sudo apt-get install -y docker.io
@@ -76,7 +106,7 @@ jobs:
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
               sudo docker login --username AWS --password-stdin $ECR_REGISTRY
 
-            # Pull and run container
+            # Pull & run container
             sudo docker stop $IMAGE_NAME || true
             sudo docker rm $IMAGE_NAME || true
             sudo docker pull $ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG
