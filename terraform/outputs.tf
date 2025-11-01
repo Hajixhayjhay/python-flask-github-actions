@@ -16,3 +16,7 @@ output "image_name" {
 output "image_tag" {
   value = var.image_tag
 }
+
+output "ecr_repository_uri" {
+  value = aws_ecr_repository.flask_app.repository_url
+}
