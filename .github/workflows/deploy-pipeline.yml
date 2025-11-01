@@ -14,6 +14,7 @@ env:
   AWS_REGION: us-east-1
   TERRAFORM_VER: 1.5.1
   GIT_SHA: ${{ github.sha }}
+  ECR_REPO: docker-flask  # your ECR repository name
 
 jobs:
   terraform:
@@ -68,7 +69,7 @@ jobs:
     env:
       AWS_REGION: us-east-1
       GIT_SHA: ${{ github.sha }}
-      ECR_REPO_URL: ${{ needs.terraform.outputs.ecr_repo_url }}
+      ECR_REPO: docker-flask
 
     steps:
       - name: Checkout Repo
@@ -86,8 +87,10 @@ jobs:
 
       - name: Build and Push Docker Image
         run: |
-          docker build -t "$ECR_REPO_URL:$GIT_SHA" .
-          docker push "$ECR_REPO_URL:$GIT_SHA"
+          IMAGE_TAG=${GIT_SHA}
+          IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:$IMAGE_TAG
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
 
   deploy:
     name: Deploy on EC2
@@ -97,7 +100,7 @@ jobs:
       AWS_REGION: us-east-1
       GIT_SHA: ${{ github.sha }}
       EC2_PUBLIC_IP: ${{ needs.terraform.outputs.ec2_public_ip }}
-      ECR_REPO_URL: ${{ needs.terraform.outputs.ecr_repo_url }}
+      ECR_REPO: docker-flask
 
     steps:
       - name: Checkout Repo
@@ -112,11 +115,10 @@ jobs:
           script: |
             echo "Cleaning old containers..."
             docker rm -f flask-app || true
-            docker rmi -f $ECR_REPO_URL:$GIT_SHA || true
+            docker rmi -f ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${GIT_SHA} || true
 
             echo "Logging into ECR..."
-            aws ecr get-login-password --region $AWS_REGION | \
-              docker login --username AWS --password-stdin $ECR_REPO_URL
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
             echo "Running new container..."
-            docker run -d -p 80:5000 --name flask-app $ECR_REPO_URL:$GIT_SHA
+            docker run -d -p 80:5000 --name flask-app ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${GIT_SHA}
