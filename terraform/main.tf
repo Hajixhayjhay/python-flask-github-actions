@@ -144,21 +144,14 @@ resource "aws_instance" "web_server" {
   tags = {
     Name = "flaskapp-web-server"
   }
- user_data = <<-EOF
-              #!/bin/bash
-              apt update -y
-              apt install -y docker.io
-              systemctl start docker
-              systemctl enable docker
-              EOF
+
 }
 
-
 resource "aws_ecr_repository" "flask_app" {
-  name                 = "FlaskAppECR"
+  name                 = "docker-flask"
   image_tag_mutability = "MUTABLE"
 
   tags = {
-    Name = "FlaskAppECR"
+    Name = "docker-flask"
   }
 }

@@ -8,7 +8,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPO: FlaskAppECR
+  ECR_REPO: docker-flask
   EC2_NAME: flaskapp-web-server
   TERRAFORM_VER: 1.5.1
   GIT_SHA: ${{ github.sha }}
@@ -40,8 +40,8 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -out=tfplan
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+      - name: Terraform destroy
+        run: terraform destroy -auto-approve tfplan
 
       - name: Save Terraform Outputs
         id: tf_outputs
