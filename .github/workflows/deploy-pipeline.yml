@@ -42,7 +42,7 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -out=tfplan
 
-      - name: Terraform Apply
+      - name: Terraform destroy
         run: terraform apply -auto-approve tfplan
 
       - name: Save Terraform Outputs
