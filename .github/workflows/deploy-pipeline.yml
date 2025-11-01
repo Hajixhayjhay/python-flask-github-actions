@@ -1,134 +1,92 @@
-name: Terraform + Docker Deploy
+name: CI/CD - Flask on AWS EC2 via Terraform
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
-    inputs:
-      destroy_first:
-        description: 'Destroy existing resources before applying?'
-        default: 'false'
 
 env:
   AWS_REGION: us-east-1
-  TERRAFORM_VER: 1.5.1
+  TERRAFORM_VER: 1.9.5
   ECR_REPO: docker-flask
 
 jobs:
-  terraform:
-    name: Provision AWS Resources
+  deploy:
     runs-on: ubuntu-latest
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-    defaults:
-      run:
-        working-directory: ./terraform
-    outputs:
-      ec2_public_ip: ${{ steps.tf_outputs.outputs.ec2_public_ip }}
-      ecr_repo_url: ${{ steps.tf_outputs.outputs.ecr_repo_url }}
 
     steps:
-      - name: Checkout Repo
+      # ---------------------------
+      # 1️⃣ Checkout Repository
+      # ---------------------------
+      - name: Checkout code
         uses: actions/checkout@v4
 
+      # ---------------------------
+      # 2️⃣ Configure AWS Credentials
+      # ---------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ---------------------------
+      # 3️⃣ Setup Terraform
+      # ---------------------------
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VER }}
 
+      # ---------------------------
+      # 4️⃣ Terraform Init & Apply
+      # ---------------------------
       - name: Terraform Init
         run: terraform init
 
-      - name: Destroy existing resources (optional)
-        if: ${{ github.event.inputs.destroy_first == 'true' }}
-        run: terraform destroy -auto-approve
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
+      - name: Terraform Validate
+        run: terraform validate
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -auto-approve
 
-      - name: Save Terraform Outputs
-        id: tf_outputs
+      # ---------------------------
+      # 5️⃣ Get Outputs
+      # ---------------------------
+      - name: Get Terraform outputs
+        id: tf-output
         run: |
-          EC2_IP=$(terraform output -raw ec2_public_ip | tr -d '\r\n')
-          ECR_URL=$(terraform output -raw ecr_repo_url | tr -d '\r\n')
-          echo "EC2_PUBLIC_IP=$EC2_IP" >> $GITHUB_ENV
-          echo "ECR_REPO_URL=$ECR_URL" >> $GITHUB_ENV
-          echo "ec2_public_ip=$EC2_IP" >> $GITHUB_OUTPUT
-          echo "ecr_repo_url=$ECR_URL" >> $GITHUB_OUTPUT
+          echo "EC2_PUBLIC_IP=$(terraform output -raw ec2_public_ip)" >> $GITHUB_ENV
+          echo "IMAGE_NAME=$(terraform output -raw image_name)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$(terraform output -raw image_tag)" >> $GITHUB_ENV
 
-  build_push:
-    name: Build and Push Docker Image
-    runs-on: ubuntu-latest
-    needs: terraform
-    env:
-      AWS_REGION: us-east-1
-      GIT_SHA: ${{ github.sha }}
-      ECR_REPO: docker-flask
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
+      # ---------------------------
+      # 6️⃣ Login to Amazon ECR
+      # ---------------------------
       - name: Login to Amazon ECR
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and Push Docker Image
+      # ---------------------------
+      # 7️⃣ Build & Push Docker Image
+      # ---------------------------
+      - name: Build, Tag, and Push image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${GIT_SHA}
-          docker build -t $IMAGE_URI .
-          docker push $IMAGE_URI
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          docker build -t $ECR_REGISTRY/${{ env.ECR_REPO }}:${GITHUB_SHA} .
+          docker push $ECR_REGISTRY/${{ env.ECR_REPO }}:${GITHUB_SHA}
 
-  deploy:
-    name: Deploy on EC2
-    runs-on: ubuntu-latest
-    needs: [terraform, build_push]
-    env:
-      AWS_REGION: us-east-1
-      AWS_EC2: "flaskapp-web-server"
-      GIT_SHA: ${{ github.sha }}
-      ECR_REPO: docker-flask
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Get EC2 Public IP
-        run: |
-          echo "EC2_PUBLIC_IP=$(aws ec2 describe-instances \
-            --filters Name=tag:Name,Values=${{ env.AWS_EC2 }} \
-            --query 'Reservations[*].Instances[*].PublicIpAddress' \
-            --output text)" >> $GITHUB_ENV
-          echo "EC2 Public IP is $EC2_PUBLIC_IP"
-
-      - name: SSH into EC2 and Deploy Container
-        uses: appleboy/ssh-action@v1.0.3
+      # ---------------------------
+      # 8️⃣ Deploy to EC2
+      # ---------------------------
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.1.0
         with:
           host: ${{ env.EC2_PUBLIC_IP }}
           username: ubuntu
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
+          key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             echo "🔍 Checking Docker & AWS CLI..."
             if ! command -v docker &> /dev/null; then
@@ -141,7 +99,9 @@ jobs:
 
             if ! command -v aws &> /dev/null; then
               echo "Installing AWS CLI..."
-              sudo apt install -y awscli
+              sudo snap install aws-cli --classic || \
+              (curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
+              sudo apt install -y unzip && unzip awscliv2.zip && sudo ./aws/install)
             fi
 
             echo "🧩 Configuring AWS CLI..."
@@ -151,16 +111,17 @@ jobs:
 
             echo "🪣 Logging in to ECR..."
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-              docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+              docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
 
             echo "🧹 Cleaning old containers..."
             docker stop flask-app || true
             docker rm flask-app || true
 
             echo "📦 Pulling new image..."
-            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${{ github.sha }}
+            docker pull ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${GITHUB_SHA}
 
             echo "🚀 Running new container..."
-            docker run -d -p 80:5000 --name flask-app ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${{ github.sha }}
+            docker run -d -p 80:5000 --name flask-app \
+              ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${GITHUB_SHA}
 
             echo "✅ Deployment complete! App should now be live."
