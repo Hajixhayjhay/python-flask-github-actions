@@ -83,8 +83,6 @@ jobs:
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
-        with:
-          registry: ${{ needs.terraform.outputs.ecr_repo_url }}
 
       - name: Build and Push Docker Image
         run: |
