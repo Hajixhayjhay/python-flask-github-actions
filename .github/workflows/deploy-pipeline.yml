@@ -41,7 +41,7 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform destroy
-        run: terraform apply -auto-approve tfplan
+        run: terraform destroy -auto-approve
 
       - name: Save Terraform Outputs
         id: tf_outputs
