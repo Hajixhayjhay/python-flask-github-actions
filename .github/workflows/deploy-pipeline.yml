@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: terraform
     env:
-      AWS_REGION: ${{ env.AWS_REGION }}
+      AWS_REGION: usr-east-1
       GIT_SHA: ${{ github.sha }}
 
     steps:
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build_push
     env:
-      AWS_REGION: ${{ env.AWS_REGION }}
+      AWS_REGION: us-east-1
       GIT_SHA: ${{ github.sha }}
 
     steps:
