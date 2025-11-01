@@ -82,9 +82,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        run: |
-          aws ecr get-login-password --region $AWS_REGION | \
-          docker login --username AWS --password-stdin "$ECR_REPO_URL"
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry: ${{ needs.terraform.outputs.ecr_repo_url }}
 
       - name: Build and Push Docker Image
         run: |
