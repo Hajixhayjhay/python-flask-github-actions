@@ -52,6 +52,11 @@ jobs:
           echo "EC2_PUBLIC_IP=$EC2_IP" >> $GITHUB_ENV
           echo "ECR_REPO_URL=$ECR_URL" >> $GITHUB_ENV
         working-directory: ./terraform
+      
+      - name: Debug Terraform Outputs
+        run: |
+          echo "EC2_PUBLIC_IP=$EC2_PUBLIC_IP"
+          echo "ECR_REPO_URL=$ECR_REPO_URL"
 
   build_push:
     name: Build and Push Docker Image
@@ -72,9 +77,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Debug ECR URL
-        run: echo "ECR_REPO_URL=$ECR_REPO_URL"
-
+     
 
       - name: Login to Amazon ECR
         run: |
