@@ -155,7 +155,7 @@ resource "aws_instance" "web_server" {
 
 
 resource "aws_ecr_repository" "flask_app" {
-  name                 = "flaskapp"
+  name                 = "FlaskAppECR"
   image_tag_mutability = "MUTABLE"
 
   tags = {
